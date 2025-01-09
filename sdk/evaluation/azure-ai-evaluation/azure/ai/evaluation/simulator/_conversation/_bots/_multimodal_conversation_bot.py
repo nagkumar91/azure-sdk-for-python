@@ -1,16 +1,17 @@
 # ---------------------------------------------------------
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # ---------------------------------------------------------
-from typing import List, Any, Dict, Tuple
+from typing import List, Any, Dict, Tuple, Callable
 import copy
 import time
 import re
 import jinja2
 
 from azure.ai.evaluation._http_utils import AsyncHttpPipeline
-from ..types import ConversationTurn
+from .._types import ConversationTurn
 from ..._model_tools import RAIClient
-from .conversation_bot_base import ConversationBot
+from ..._model_tools._template_handler import TemplateParameters
+from ._conversation_bot_base import ConversationBot
 
 
 class MultiModalConversationBot(ConversationBot):
@@ -128,3 +129,5 @@ class MultiModalConversationBot(ConversationBot):
             else:
                 contents.append({"type": "text", "text": msg})
         return contents
+    
+    

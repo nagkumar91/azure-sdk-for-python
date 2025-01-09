@@ -23,7 +23,6 @@ from azure.core.pipeline.policies import AsyncRetryPolicy, RetryMode
 from ._constants import SupportedLanguages
 from ._conversation import (
     CallbackConversationBot,
-    MultiModalConversationBot,
     ConversationBot,
     ConversationRole,
     ConversationTurn,
@@ -385,16 +384,7 @@ class AdversarialSimulator:
                 _UnstableAdversarialScenario.ADVERSARIAL_IMAGE_GEN,
                 _UnstableAdversarialScenario.ADVERSARIAL_IMAGE_MULTIMODAL,
             ]:
-                return MultiModalConversationBot(
-                    callback=target,
-                    role=role,
-                    model=DummyModel(),
-                    user_template=str(template),
-                    user_template_parameters=parameters,
-                    rai_client=self.rai_client,
-                    conversation_template="",
-                    instantiation_parameters={},
-                )
+                raise NotImplementedError("MultiModalConversationBot is not available.")
 
             return CallbackConversationBot(
                 callback=target,

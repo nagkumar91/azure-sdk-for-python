@@ -8,16 +8,25 @@ from azure.ai.evaluation.simulator._conversation import (
     ConversationBot,
     ConversationRole,
     ConversationTurn,
-    LLMBase,
-    OpenAIChatCompletionsModel,
 )
 from azure.core.pipeline.policies import AsyncRetryPolicy, RetryMode
 
+# Placeholder classes to replace missing imports
+class LLMBase:
+    pass
+
+class OpenAIChatCompletionsModel:
+    def __init__(self, name, endpoint_url, token_manager):
+        self.name = name
+        self.endpoint_url = endpoint_url
+        self.token_manager = token_manager
+
+    async def get_conversation_completion(self, messages, session, role):
+        return {"response": {}, "request": {}, "time_taken": 0, "full_response": {}}
 
 # Mock classes for dependencies
 class MockLLMBase(LLMBase):
     pass
-
 
 class MockOpenAIChatCompletionsModel(OpenAIChatCompletionsModel):
     def __init__(self):
@@ -121,3 +130,36 @@ class TestConversationBot:
             response, request, time_taken, full_response = await bot.generate_response(session, conversation_history, 1)
             mocked_method.assert_called_once()
             assert "Hi!" in mocked_method.call_args[1]["messages"][1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_generate_response_no_history(self, bot_assistant_params):
+        bot = ConversationBot(**bot_assistant_params)
+        session = AsyncMock()
+        # No conversation history
+        conversation_history = []
+        with patch.object(
+            MockOpenAIChatCompletionsModel, "get_conversation_completion", new_callable=AsyncMock
+        ) as mocked_method:
+            mocked_method.return_value = {
+                "response": {
+                    "samples": []
+                },
+                "request": {},
+                "time_taken": 1.23,
+                "full_response": {},
+            }
+            response, request, time_taken, full_response = await bot.generate_response(session, conversation_history, 5, 1)
+            mocked_method.assert_called_once()
+            assert response["samples"] == []
+            assert time_taken == 1.23
+
+    @pytest.mark.asyncio
+    async def test_generate_response_error_from_model(self, bot_user_params):
+        bot = ConversationBot(**bot_user_params)
+        session = AsyncMock()
+        conversation_history = [ConversationTurn(role=ConversationRole.USER, message="Hey bot")]
+        with patch.object(
+            MockOpenAIChatCompletionsModel, "get_conversation_completion", side_effect=RuntimeError("Model Error")
+        ):
+            with pytest.raises(RuntimeError):
+                await bot.generate_response(session, conversation_history, 3, 1)

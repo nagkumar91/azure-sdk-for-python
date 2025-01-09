@@ -5,8 +5,9 @@ import pytest
 from azure.ai.evaluation.simulator._conversation import (
     CallbackConversationBot,
     ConversationRole,
-    OpenAIChatCompletionsModel,
 )
+from azure.ai.evaluation.simulator._model_tools import OpenAIChatCompletionsModel
+from azure.ai.evaluation._exceptions import EvaluationException
 
 
 class MockOpenAIChatCompletionsModel(OpenAIChatCompletionsModel):
@@ -108,3 +109,20 @@ class TestCallbackConversationBot:
             await bot.generate_response(session, conversation_history, max_history=10)
 
         assert "Unexpected error" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_generate_response_callback_returns_invalid_schema(self):
+        async def mock_callback(msg):
+            return {"wrong_key": "no messages key"}
+        bot = CallbackConversationBot(
+            callback=mock_callback,
+            model=MockOpenAIChatCompletionsModel(),
+            user_template="",
+            user_template_parameters={},
+            role=ConversationRole.ASSISTANT,
+            conversation_template="",
+            instantiation_parameters={},
+        )
+        session = AsyncMock()
+        with pytest.raises(EvaluationException):
+            await bot.generate_response(session, [], 10)

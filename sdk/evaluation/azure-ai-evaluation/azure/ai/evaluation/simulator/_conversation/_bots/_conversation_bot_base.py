@@ -13,8 +13,8 @@ from azure.ai.evaluation._exceptions import ErrorBlame, ErrorCategory, ErrorTarg
 # For type hints:
 from ..._model_tools import LLMBase, OpenAIChatCompletionsModel
 # or from azure.ai.evaluation.simulator._model_tools import LLMBase, OpenAIChatCompletionsModel
-from ..constants import ConversationRole
-from ..types import ConversationTurn
+from .._constants import ConversationRole
+from .._types import ConversationTurn
 from ..._model_tools._template_handler import TemplateParameters
 
 

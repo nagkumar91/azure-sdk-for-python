@@ -1,15 +1,21 @@
 # ---------------------------------------------------------
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # ---------------------------------------------------------
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 import copy
 import time
 import jinja2
 
 from azure.ai.evaluation._http_utils import AsyncHttpPipeline
-from ..types import ConversationTurn
+from .._types import ConversationTurn
 from ..._model_tools._template_handler import TemplateParameters
-from .conversation_bot_base import ConversationBot
+from ._conversation_bot_base import ConversationBot
+from azure.ai.evaluation._exceptions import (
+    EvaluationException,
+    ErrorBlame,
+    ErrorCategory,
+    ErrorTarget
+)
 
 
 class CallbackConversationBot(ConversationBot):
