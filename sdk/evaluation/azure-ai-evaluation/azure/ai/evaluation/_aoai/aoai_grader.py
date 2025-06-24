@@ -35,7 +35,7 @@ class AzureOpenAIGrader():
 
     """
 
-    id = "aoai://general"
+    id = "azureai://built-in/evaluators/azure-openai/custom_grader"
 
     def __init__(self, *, model_config : Union[AzureOpenAIModelConfiguration, OpenAIModelConfiguration], grader_config: Dict[str, Any], **kwargs: Any):
         self._model_config = model_config
