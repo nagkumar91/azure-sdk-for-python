@@ -373,6 +373,24 @@ def _validate_columns_for_target(
             blame=ErrorBlame.USER_ERROR,
         )
 
+def _parse_columns_from_mapping(mapped_values) -> Set[str]:
+    """
+    Parse column names from mapping values like "${data.column}" or "${run.outputs.column}"
+    
+    :param mapped_values: Collection of mapping value strings
+    :return: Set of actual column names that should exist in the dataframe
+    """
+    columns = set()
+    for value in mapped_values:
+        # Match patterns like ${data.column} or ${run.outputs.column}
+        match = re.match(r'\$\{(?:data|run\.outputs)\.(.+)\}', value)
+        if match:
+            column_name = match.group(1)
+            # If it's a run.outputs reference, it should be prefixed with __outputs.
+            if value.startswith("${run.outputs."):
+                column_name = f"{Prefixes.TSG_OUTPUTS}{column_name}"
+            columns.add(column_name)
+    return columns
 
 def _validate_columns_for_evaluators(
     df: pd.DataFrame,
@@ -396,6 +414,37 @@ def _validate_columns_for_evaluators(
     :type column_mapping: Dict[str, Dict[str, str]]
     :raises EvaluationException: If data is missing required inputs or if the target callable did not generate the necessary columns.
     """
+    evaluator_col_set = set()
+
+    # Add logging to understand the validation
+    LOGGER.info("=== Column Validation ===")
+    LOGGER.info(f"Columns needed by evaluators: {evaluator_col_set}")
+    LOGGER.info(f"Available columns in dataframe: {list(df.columns)}")
+    LOGGER.info(f"Column mapping: {json.dumps(column_mapping, indent=2)}")
+
+    col_in_df_set = set(df.columns.tolist())
+
+    # Apply column mapping and check all required columns are in the data frame
+    for evaluator_name, evaluator in evaluators.items():
+        # Handle evaluators with column_mapping
+        if evaluator_name in column_mapping:
+            mapped_values = column_mapping[evaluator_name].values()
+            required_columns = _parse_columns_from_mapping(mapped_values)
+            
+            LOGGER.info(f"Evaluator '{evaluator_name}' requires columns: {required_columns}")
+            
+            missing_columns = required_columns - col_in_df_set
+            if missing_columns:
+                LOGGER.error(f"Missing columns for evaluator '{evaluator_name}': {missing_columns}")
+                msg = f"Couldn't find these mapping relations: {', '.join(mapped_values)}." \
+                      f" Please make sure your input mapping keys and values match your YAML input section and input data"
+                raise EvaluationException(
+                    message=msg,
+                    internal_message=msg,
+                    target=ErrorTarget.EVALUATE,
+                    category=ErrorCategory.INVALID_VALUE,
+                    blame=ErrorBlame.USER_ERROR,
+                )
     missing_inputs_per_evaluator = {}
 
     for evaluator_name, evaluator in evaluators.items():
@@ -446,7 +495,7 @@ def _validate_columns_for_evaluators(
     if missing_inputs_per_evaluator:
         msg = "Some evaluators are missing required inputs:\n"
         for evaluator_name, missing in missing_inputs_per_evaluator.items():
-            msg += f"- {evaluator_name}: {missing}\n"
+            msg += f"\n Evaluator '{evaluator_name}' is missing required inputs: {missing}\n"
 
         # Add the additional notes
         msg += "\nTo resolve this issue:\n"
@@ -601,6 +650,16 @@ def _apply_target_to_data(
         )
         target_output: pd.DataFrame = batch_client.get_details(run, all_results=True)
         run_summary = batch_client.get_run_summary(run)
+    
+    LOGGER.info("=== Target Output Analysis ===")
+    LOGGER.info(f"All columns in target output: {list(target_output.columns)}")
+    output_columns = [col for col in target_output.columns if col.startswith(Prefixes.OUTPUTS)]
+    LOGGER.info(f"Output columns from target: {output_columns}")
+    LOGGER.info(f"Output column names (without prefix): {[col[len(Prefixes.OUTPUTS):] for col in output_columns]}")
+    
+    # Log a sample of the data to see what's actually there
+    if len(target_output) > 0:
+        LOGGER.info(f"Sample target output (first row): {target_output.iloc[0].to_dict()}")
 
     if run_summary["completed_lines"] == 0:
         msg = (
@@ -668,6 +727,10 @@ def _process_column_mappings(
 
     expected_references = re.compile(r"^\$\{(target|data)\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}$")
 
+    # Add logging here
+    LOGGER.info("Processing column mappings...")
+    LOGGER.info(f"Input column_mapping: {json.dumps(column_mapping, indent=2)}")
+
     if column_mapping:
         for evaluator, mapping_config in column_mapping.items():
             if isinstance(mapping_config, dict):
@@ -686,8 +749,16 @@ def _process_column_mappings(
                         )
 
                     # Replace ${target.} with ${run.outputs.}
+                    original_value = map_value
                     processed_config[evaluator][map_to_key] = map_value.replace("${target.", "${run.outputs.")
+                    
+                    # Add logging for each mapping
+                    if original_value != processed_config[evaluator][map_to_key]:
+                        LOGGER.info(f"  Evaluator '{evaluator}': Converted '{map_to_key}': '{original_value}' -> '{processed_config[evaluator][map_to_key]}'")
+                    else:
+                        LOGGER.info(f"  Evaluator '{evaluator}': Keeping '{map_to_key}': '{map_value}'")
 
+    LOGGER.info(f"Processed column_mapping: {json.dumps(processed_config, indent=2)}")
     return processed_config
 
 
@@ -1030,9 +1101,14 @@ def _preprocess_data(
 
     # If target is set, apply 1-1 column mapping from target outputs to evaluator inputs
     if data is not None and target is not None:
+        LOGGER.info(f"Target function detected. Applying target to data...")
         input_data_df, target_generated_columns, target_run = _apply_target_to_data(
             target, batch_run_data, batch_run_client, input_data_df, evaluation_name, **kwargs
         )
+        
+        LOGGER.info(f"Target generated columns: {target_generated_columns}")
+        LOGGER.info(f"Columns in data after target application: {list(input_data_df.columns)}")
+
 
         # IMPORTANT FIX: For ProxyClient, create a temporary file with the complete dataframe
         # This ensures that evaluators get all rows (including failed ones with NaN values)
@@ -1078,6 +1154,8 @@ def _preprocess_data(
                     # We will add our mapping only if customer did not map target output.
                     if col not in mapping and target_reference not in mapped_to_values:
                         column_mapping[evaluator_name][col] = target_reference
+                        LOGGER.info(f"Auto-mapping target output '{col}' to '{target_reference}' for evaluator '{evaluator_name}'")
+
 
     # After we have generated all columns, we can check if we have everything we need for evaluators.
     _validate_columns_for_evaluators(input_data_df, evaluators, target, target_generated_columns, column_mapping)
@@ -1092,6 +1170,9 @@ def _preprocess_data(
             # Also ignore columns that are already in config, since they've been covered by target mapping.
             if not col.startswith(Prefixes.TSG_OUTPUTS) and col not in column_mapping["default"].keys():
                 column_mapping["default"][col] = f"${{data.{col}}}"
+                LOGGER.info(f"Auto-mapping input column '{col}' to '${{data.{col}}}' in default mapping")
+
+    LOGGER.info(f"Final complete column mapping: {json.dumps(column_mapping, indent=2)}")
 
     return __ValidatedData(
         evaluators=evaluators,

@@ -329,55 +329,45 @@ def _write_output(path: Union[str, os.PathLike], data_dict: Any) -> None:
     tqdm.write(f'Evaluation results saved to "{p.resolve()}".\n')
 
 
-def _apply_column_mapping(
-    source_df: pd.DataFrame, mapping_config: Optional[Dict[str, str]], inplace: bool = False
-) -> pd.DataFrame:
-    """
-    Apply column mapping to source_df based on mapping_config.
+def _apply_column_mapping(data: pd.DataFrame, column_mapping: Optional[Dict[str, str]]) -> pd.DataFrame:
+    """Apply column mapping to a DataFrame
 
-    This function is used for pre-validation of input data for evaluators
-    :param source_df: the data frame to be changed.
-    :type source_df: pd.DataFrame
-    :param mapping_config: The configuration, containing column mapping.
-    :type mapping_config: Dict[str, str].
-    :param inplace: If true, the source_df will be changed inplace.
-    :type inplace: bool
-    :return: The modified data frame.
+    :param data: Input DataFrame
+    :type data: pd.DataFrame
+    :param column_mapping: Column mapping dictionary
+    :type column_mapping: Optional[Dict[str, str]]
+    :return: DataFrame with mapped columns
     :rtype: pd.DataFrame
     """
-    result_df = source_df
+    if not column_mapping:
+        return data
 
-    if mapping_config:
-        column_mapping = {}
-        columns_to_drop = set()
-        pattern_prefix = "data."
-        run_outputs_prefix = "run.outputs."
-
-        for map_to_key, map_value in mapping_config.items():
-            match = re.search(r"^\${([^{}]+)}$", map_value)
-            if match is not None:
-                pattern = match.group(1)
-                if pattern.startswith(pattern_prefix):
-                    map_from_key = pattern[len(pattern_prefix) :]
-                elif pattern.startswith(run_outputs_prefix):
-                    # Target-generated columns always starts from .outputs.
-                    map_from_key = f"{Prefixes.TSG_OUTPUTS}{pattern[len(run_outputs_prefix) :]}"
-                # if we are not renaming anything, skip.
-                if map_from_key == map_to_key:
-                    continue
-                # If column needs to be mapped to already existing column, we will add it
-                # to the drop list.
-                if map_to_key in source_df.columns:
-                    columns_to_drop.add(map_to_key)
-                column_mapping[map_from_key] = map_to_key
-        # If we map column to another one, which is already present in the data
-        # set and the letter also needs to be mapped, we will not drop it, but map
-        # instead.
-        columns_to_drop = columns_to_drop - set(column_mapping.keys())
-        result_df = source_df.drop(columns=columns_to_drop, inplace=inplace)
-        result_df.rename(columns=column_mapping, inplace=True)
-
-    return result_df
+    new_df = pd.DataFrame()
+    
+    # Add logging
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Applying column mapping: {column_mapping}")
+    logger.info(f"Available columns in data: {list(data.columns)}")
+    
+    for evaluator_col, data_ref in column_mapping.items():
+        # Parse the reference (e.g., "${data.column_name}" or "${run.outputs.column_name}")
+        match = re.match(r'\$\{(data|run\.outputs)\.(.+)\}', data_ref)
+        if match:
+            source_type, column_name = match.groups()
+            
+            if column_name in data:
+                new_df[evaluator_col] = data[column_name]
+                logger.info(f"  Mapped '{column_name}' -> '{evaluator_col}'")
+            else:
+                logger.warning(f"  Column '{column_name}' not found in data!")
+                # Create column with NaN values
+                new_df[evaluator_col] = pd.Series([None] * len(data))
+        else:
+            logger.warning(f"  Invalid column reference: {data_ref}")
+    
+    logger.info(f"Resulting mapped columns: {list(new_df.columns)}")
+    return new_df
 
 
 def _has_aggregator(evaluator: object) -> bool:
