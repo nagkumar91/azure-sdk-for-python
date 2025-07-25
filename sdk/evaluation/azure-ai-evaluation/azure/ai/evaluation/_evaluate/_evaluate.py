@@ -1203,75 +1203,161 @@ def _run_callable_evaluators(
     fail_on_evaluator_errors: bool = False,
     **kwargs,
 ) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, __EvaluatorInfo]]:
-
+    """Run callable evaluators on the input data, handling missing columns gracefully."""
+    
     # Extract needed values
     batch_run_client = validated_data["batch_run_client"]
     target_run = validated_data["target_run"]
     batch_run_data = validated_data["batch_run_data"]
     column_mapping = validated_data["column_mapping"]
     evaluators = validated_data["evaluators"]
+    input_data_df = validated_data["input_data_df"]
 
-    # Clean up temporary file after evaluation if it was created
-    temp_file_to_cleanup = None
-    if (
-        isinstance(batch_run_client, ProxyClient)
-        and isinstance(batch_run_data, str)
-        and batch_run_data.endswith(".jsonl")
-    ):
-        # Check if it's a temporary file (contains temp directory path)
-        if tempfile.gettempdir() in batch_run_data:
-            temp_file_to_cleanup = batch_run_data
-
+    # Store temporary files for cleanup
+    temp_files_to_cleanup = []
+    
     try:
         with EvalRunContext(batch_run_client):
-            runs = {
-                evaluator_name: batch_run_client.run(
-                    flow=evaluator,
-                    data=batch_run_data,
-                    # Don't pass target_run when using complete dataframe
-                    run=target_run,
-                    evaluator_name=evaluator_name,
-                    column_mapping=column_mapping.get(evaluator_name, column_mapping.get("default", None)),
-                    stream=True,
-                    name=kwargs.get("_run_name"),
-                )
-                for evaluator_name, evaluator in evaluators.items()
-            }
-
-            # get_details needs to be called within EvalRunContext scope in order to have user agent populated
-            per_evaluator_results: Dict[str, __EvaluatorInfo] = {
-                evaluator_name: {
-                    "result": batch_run_client.get_details(run, all_results=True),
-                    "metrics": batch_run_client.get_metrics(run),
-                    "run_summary": batch_run_client.get_run_summary(run),
-                }
-                for evaluator_name, run in runs.items()
-            }
+            runs = {}
+            per_evaluator_results: Dict[str, __EvaluatorInfo] = {}
+            
+            for evaluator_name, evaluator in evaluators.items():
+                # Apply column mapping to get the data that this evaluator needs
+                mapping_config = column_mapping.get(evaluator_name, column_mapping.get("default", None))
+                mapped_df = _apply_column_mapping(input_data_df, mapping_config)
+                
+                # Check for rows with missing required columns
+                evaluator_params = [
+                    param.name
+                    for param in inspect.signature(evaluator).parameters.values()
+                    if param.default == inspect.Parameter.empty and param.name not in ["kwargs", "args", "self"]
+                ]
+                
+                # Create a mask for rows that have all required columns (not NaN)
+                valid_rows_mask = pd.Series([True] * len(mapped_df))
+                for param in evaluator_params:
+                    if param in mapped_df.columns:
+                        valid_rows_mask &= mapped_df[param].notna()
+                
+                skipped_rows = (~valid_rows_mask).sum()
+                if skipped_rows > 0:
+                    LOGGER.warning(
+                        f"Evaluator '{evaluator_name}' will skip {skipped_rows} rows due to missing required columns"
+                    )
+                
+                # Prepare data for this evaluator
+                if valid_rows_mask.all():
+                    # All rows are valid, use original data
+                    evaluator_data = batch_run_data
+                else:
+                    # Some rows have missing values, we need to filter
+                    if isinstance(batch_run_client, ProxyClient):
+                        # For ProxyClient, create a temporary JSONL file with only valid rows
+                        valid_df = input_data_df[valid_rows_mask].copy()
+                        temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
+                        temp_files_to_cleanup.append(temp_file.name)
+                        
+                        # Remove line_number column to avoid duplication
+                        if LINE_NUMBER in valid_df.columns:
+                            valid_df = valid_df.drop(columns=[LINE_NUMBER])
+                        
+                        for _, row in valid_df.iterrows():
+                            row_dict = row.to_dict()
+                            temp_file.write(json.dumps(row_dict) + "\n")
+                        temp_file.close()
+                        evaluator_data = temp_file.name
+                        
+                        LOGGER.info(f"Created temporary JSONL file for evaluator '{evaluator_name}' "
+                                  f"with {len(valid_df)} valid rows out of {len(input_data_df)} total rows")
+                    else:
+                        # For DataFrame-based clients, filter the dataframe
+                        evaluator_data = input_data_df[valid_rows_mask].copy()
+                
+                if valid_rows_mask.any():
+                    # Run evaluator only if there are valid rows
+                    run = batch_run_client.run(
+                        flow=evaluator,
+                        data=evaluator_data,
+                        run=None,  # Don't pass target_run since we're handling row filtering ourselves
+                        evaluator_name=evaluator_name,
+                        column_mapping=mapping_config,
+                        stream=True,
+                        name=kwargs.get("_run_name"),
+                    )
+                    runs[evaluator_name] = run
+                    
+                    # Get results
+                    result_df = batch_run_client.get_details(run, all_results=True)
+                    metrics = batch_run_client.get_metrics(run)
+                    run_summary = batch_run_client.get_run_summary(run)
+                    
+                    # Create a full result DataFrame with NaN for skipped rows
+                    full_result_df = pd.DataFrame(index=range(len(input_data_df)))
+                    
+                    # Get output columns from the evaluator results (excluding input columns)
+                    output_cols = [col for col in result_df.columns if not col.startswith("inputs.")]
+                    for col in output_cols:
+                        full_result_df[col] = pd.NA
+                    
+                    # Fill in the results for valid rows
+                    valid_indices = input_data_df[valid_rows_mask].index
+                    for i, col in enumerate(output_cols):
+                        full_result_df.loc[valid_indices, col] = result_df[col].values
+                    
+                    per_evaluator_results[evaluator_name] = {
+                        "result": full_result_df,
+                        "metrics": metrics,
+                        "run_summary": run_summary,
+                    }
+                else:
+                    # No valid rows for this evaluator
+                    LOGGER.warning(f"Evaluator '{evaluator_name}' skipped all rows due to missing required columns")
+                    
+                    # Create empty result with NaN values
+                    full_result_df = pd.DataFrame(index=range(len(input_data_df)))
+                    
+                    # Add empty columns based on what the evaluator would typically output
+                    # This is a best-effort approach - we add a result column at minimum
+                    full_result_df[f"{evaluator_name}_result"] = pd.NA
+                    
+                    per_evaluator_results[evaluator_name] = {
+                        "result": full_result_df,
+                        "metrics": {},
+                        "run_summary": {
+                            "completed_lines": 0,
+                            "failed_lines": 0,
+                            "skipped_lines": len(input_data_df)
+                        },
+                    }
+                    
     finally:
-        # Clean up temporary file if it was created
-        if temp_file_to_cleanup and os.path.exists(temp_file_to_cleanup):
-            try:
-                os.unlink(temp_file_to_cleanup)
-            except Exception as e:
-                LOGGER.warning(f"Failed to clean up temporary file {temp_file_to_cleanup}: {e}")
+        # Clean up all temporary files
+        for temp_file in temp_files_to_cleanup:
+            if os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                    LOGGER.info(f"Cleaned up temporary file: {temp_file}")
+                except Exception as e:
+                    LOGGER.warning(f"Failed to clean up temporary file {temp_file}: {e}")
     
     # Concatenate all results
     evaluators_result_df = pd.DataFrame()
     evaluators_metric = {}
+    
     for evaluator_name, evaluator_result in per_evaluator_results.items():
-        if fail_on_evaluator_errors and evaluator_result["run_summary"]["failed_lines"] > 0:
+        if fail_on_evaluator_errors and evaluator_result["run_summary"].get("failed_lines", 0) > 0:
             _print_summary(per_evaluator_results)
-            _turn_error_logs_into_exception(evaluator_result["run_summary"]["log_path"] + "/error.json")
+            if "log_path" in evaluator_result["run_summary"]:
+                _turn_error_logs_into_exception(evaluator_result["run_summary"]["log_path"] + "/error.json")
 
         evaluator_result_df = evaluator_result["result"]
 
-        # drop input columns - this includes inputs.line_number which would cause conflicts
-        evaluator_result_df = evaluator_result_df.drop(
-            columns=[col for col in evaluator_result_df.columns if str(col).startswith(Prefixes.INPUTS)]
-        )
+        # Drop input columns if they exist
+        input_cols_to_drop = [col for col in evaluator_result_df.columns if str(col).startswith(Prefixes.INPUTS)]
+        if input_cols_to_drop:
+            evaluator_result_df = evaluator_result_df.drop(columns=input_cols_to_drop)
 
-        # rename output columns
-        # Assuming after removing inputs columns, all columns are output columns
+        # Rename output columns
         evaluator_result_df.rename(
             columns={
                 col: f"outputs.{evaluator_name}.{str(col).replace(Prefixes.OUTPUTS, '')}"
@@ -1288,20 +1374,16 @@ def _run_callable_evaluators(
 
         evaluators_metric.update({f"{evaluator_name}.{k}": v for k, v in evaluator_result["metrics"].items()})
 
-    # Rename columns, generated by target function to outputs instead of inputs.
-    # If target generates columns, already present in the input data, these columns
-    # will be marked as outputs already so we do not need to rename them.
+    # Rename columns generated by target function
     input_data_df = _rename_columns_conditionally(validated_data["input_data_df"])
     
-    # Before concatenating, ensure line_number is handled properly
-    # If evaluators_result_df is empty, just return the input_data_df
+    # Concatenate input data with evaluator results
     if evaluators_result_df.empty:
         eval_result_df = input_data_df
     else:
-        # Ensure no duplicate columns exist between the two dataframes
-        # The evaluator results should already have had input columns dropped above
         eval_result_df = pd.concat([input_data_df, evaluators_result_df], axis=1, verify_integrity=True)
     
+    # Aggregate metrics (this will handle NaN values appropriately)
     eval_metrics = _aggregate_metrics(evaluators_result_df, evaluators)
     eval_metrics.update(evaluators_metric)
 
