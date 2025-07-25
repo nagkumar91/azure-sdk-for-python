@@ -417,10 +417,10 @@ def _validate_columns_for_evaluators(
     evaluator_col_set = set()
 
     # Add logging to understand the validation
-    LOGGER.info("=== Column Validation ===")
-    LOGGER.info(f"Columns needed by evaluators: {evaluator_col_set}")
-    LOGGER.info(f"Available columns in dataframe: {list(df.columns)}")
-    LOGGER.info(f"Column mapping: {json.dumps(column_mapping, indent=2)}")
+    print("=== Column Validation ===")
+    print(f"Columns needed by evaluators: {evaluator_col_set}")
+    print(f"Available columns in dataframe: {list(df.columns)}")
+    print(f"Column mapping: {json.dumps(column_mapping, indent=2)}")
 
     col_in_df_set = set(df.columns.tolist())
 
@@ -431,11 +431,11 @@ def _validate_columns_for_evaluators(
             mapped_values = column_mapping[evaluator_name].values()
             required_columns = _parse_columns_from_mapping(mapped_values)
             
-            LOGGER.info(f"Evaluator '{evaluator_name}' requires columns: {required_columns}")
+            print(f"Evaluator '{evaluator_name}' requires columns: {required_columns}")
             
             missing_columns = required_columns - col_in_df_set
             if missing_columns:
-                LOGGER.error(f"Missing columns for evaluator '{evaluator_name}': {missing_columns}")
+                print(f"Missing columns for evaluator '{evaluator_name}': {missing_columns}")
                 msg = f"Couldn't find these mapping relations: {', '.join(mapped_values)}." \
                       f" Please make sure your input mapping keys and values match your YAML input section and input data"
                 raise EvaluationException(
