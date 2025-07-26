@@ -1085,6 +1085,25 @@ def _preprocess_data(
         LOGGER.info(f"Target generated columns: {target_generated_columns}")
         LOGGER.info(f"Columns in data after target application: {list(input_data_df.columns)}")
 
+        # Now we need to update the column mappings to use data references instead of run.outputs references
+        # since we're creating a complete dataset that includes failed rows
+        for evaluator_name, mapping in column_mapping.items():
+            updated_mapping = {}
+            for key, value in mapping.items():
+                # If the value references run.outputs (which came from ${target.x}), 
+                # convert it to reference the data column instead
+                if value.startswith("${run.outputs."):
+                    # Extract the column name from ${run.outputs.column_name}
+                    match = re.match(r'\$\{run\.outputs\.(.+)\}', value)
+                    if match:
+                        col_name = match.group(1)
+                        # Convert to data reference with __outputs prefix
+                        updated_mapping[key] = f"${{data.{Prefixes.TSG_OUTPUTS}{col_name}}}"
+                        LOGGER.info(f"Updated mapping for '{evaluator_name}': '{key}' from '{value}' to '{updated_mapping[key]}'")
+                else:
+                    updated_mapping[key] = value
+            column_mapping[evaluator_name] = updated_mapping
+
         # This ensures that evaluators get all rows (including failed ones with NaN values)
         if isinstance(batch_run_client, ProxyClient):
             # Create a temporary JSONL file with the complete dataframe
@@ -1138,6 +1157,7 @@ def _preprocess_data(
                         LOGGER.info(f"Auto-mapping target output '{col}' to '{target_reference}' for evaluator '{evaluator_name}'")
 
     # After we have generated all columns, we can check if we have everything we need for evaluators.
+    LOGGER.info(f"Final column mapping before validation: {json.dumps(column_mapping, indent=2)}")
     _validate_columns_for_evaluators(input_data_df, evaluators, target, target_generated_columns, column_mapping)
 
     # Apply 1-1 mapping from input data to evaluator inputs, excluding values already assigned
