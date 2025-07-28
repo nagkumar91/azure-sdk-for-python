@@ -329,14 +329,14 @@ def _convert_remote_eval_params_to_grader(grader_id: str, init_params: Dict[str,
     :type init_params: Dict[str, Any]
     """
 
-    model_config = init_params.get("model_config", None)
-    if model_config is None:
-        raise EvaluationException(
-            message="Grader converter needs a valid 'model_config' key in init_params.",
-            blame=ErrorBlame.USER_ERROR,
-            category=ErrorCategory.INVALID_VALUE,
-            target=ErrorTarget.AOAI_GRADER,
-        )
+    # model_config = init_params.get("model_config", None)
+    # if model_config is None:
+    #     raise EvaluationException(
+    #         message="Grader converter needs a valid 'model_config' key in init_params.",
+    #         blame=ErrorBlame.USER_ERROR,
+    #         category=ErrorCategory.INVALID_VALUE,
+    #         target=ErrorTarget.AOAI_GRADER,
+    #     )
 
     grader_class = _get_grader_class(grader_id)
     return grader_class(**init_params)
