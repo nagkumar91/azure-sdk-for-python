@@ -54,14 +54,15 @@ class AzureOpenAIGrader:
 
     def _validate_model_config(self) -> None:
         """Validate the model configuration that this grader wrapper is using."""
-        if "api_key" not in self._model_config or not self._model_config.get("api_key"):
-            msg = f"{type(self).__name__}: Requires an api_key in the supplied model_config."
-            raise EvaluationException(
-                message=msg,
-                blame=ErrorBlame.USER_ERROR,
-                category=ErrorCategory.INVALID_VALUE,
-                target=ErrorTarget.AOAI_GRADER,
-            )
+        # if "api_key" not in self._model_config or not self._model_config.get("api_key"):
+        #     msg = f"{type(self).__name__}: Requires an api_key in the supplied model_config."
+        #     raise EvaluationException(
+        #         message=msg,
+        #         blame=ErrorBlame.USER_ERROR,
+        #         category=ErrorCategory.INVALID_VALUE,
+        #         target=ErrorTarget.AOAI_GRADER,
+        #     )
+        pass
 
     def _validate_grader_config(self) -> None:
         """Validate the grader configuration that this grader wrapper is using."""
