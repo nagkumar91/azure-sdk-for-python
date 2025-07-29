@@ -416,6 +416,9 @@ def _validate_columns_for_evaluators(
     """
     evaluator_col_set = set()
 
+    # Define system fields that should be ignored during validation
+    IGNORED_SYSTEM_FIELDS = {"_id", "line_number"}
+
     # Add logging to understand the validation
     print("=== Column Validation ===")
     print(f"Columns needed by evaluators: {evaluator_col_set}")
@@ -430,9 +433,9 @@ def _validate_columns_for_evaluators(
         if evaluator_name in column_mapping:
             mapped_values = column_mapping[evaluator_name].values()
             required_columns = _parse_columns_from_mapping(mapped_values)
-            
+
             print(f"Evaluator '{evaluator_name}' requires columns: {required_columns}")
-            
+
             missing_columns = required_columns - col_in_df_set
             if missing_columns:
                 print(f"Missing columns for evaluator '{evaluator_name}': {missing_columns}")
@@ -445,6 +448,7 @@ def _validate_columns_for_evaluators(
                     category=ErrorCategory.INVALID_VALUE,
                     blame=ErrorBlame.USER_ERROR,
                 )
+
     missing_inputs_per_evaluator = {}
 
     for evaluator_name, evaluator in evaluators.items():
@@ -455,8 +459,6 @@ def _validate_columns_for_evaluators(
         # Validate input data for evaluator
         is_built_in = evaluator.__module__.startswith("azure.ai.evaluation")
         if is_built_in:
-            # Note that for built-in evaluators supporting the "conversation" parameter,
-            # input parameters are now optional.
             evaluator_params = [
                 param.name
                 for param in inspect.signature(evaluator).parameters.values()
@@ -464,19 +466,16 @@ def _validate_columns_for_evaluators(
             ]
 
             if "conversation" in evaluator_params and "conversation" in new_df.columns:
-                # Ignore the missing fields if "conversation" presents in the input data
                 missing_inputs = []
             else:
                 optional_params = (
-                    cast(Any, evaluator)._OPTIONAL_PARAMS  # pylint: disable=protected-access
+                    cast(Any, evaluator)._OPTIONAL_PARAMS
                     if hasattr(evaluator, "_OPTIONAL_PARAMS")
                     else []
                 )
-                excluded_params = set(new_df.columns).union(optional_params)
+                excluded_params = set(new_df.columns).union(optional_params).union(IGNORED_SYSTEM_FIELDS)
                 missing_inputs = [col for col in evaluator_params if col not in excluded_params]
 
-                # If "conversation" is the only parameter and it is missing, keep it in the missing inputs
-                # Otherwise, remove it from the missing inputs
                 if "conversation" in missing_inputs:
                     if not (evaluator_params == ["conversation"] and missing_inputs == ["conversation"]):
                         missing_inputs.remove("conversation")
@@ -487,7 +486,8 @@ def _validate_columns_for_evaluators(
                 if param.default == inspect.Parameter.empty and param.name not in ["kwargs", "args", "self"]
             ]
 
-            missing_inputs = [col for col in evaluator_params if col not in new_df.columns]
+            # Filter out ignored system fields from missing inputs
+            missing_inputs = [col for col in evaluator_params if col not in new_df.columns and col not in IGNORED_SYSTEM_FIELDS]
 
         if missing_inputs:
             missing_inputs_per_evaluator[evaluator_name] = missing_inputs
@@ -497,7 +497,6 @@ def _validate_columns_for_evaluators(
         for evaluator_name, missing in missing_inputs_per_evaluator.items():
             msg += f"\n Evaluator '{evaluator_name}' is missing required inputs: {missing}\n"
 
-        # Add the additional notes
         msg += "\nTo resolve this issue:\n"
         msg += "- Ensure the data contains required inputs.\n"
         if target is not None:
