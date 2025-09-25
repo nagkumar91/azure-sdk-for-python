@@ -555,23 +555,51 @@ def _get_data_source(input_data_df: pd.DataFrame, column_mapping: Dict[str, str]
     :rtype: Dict[str, Any]
     """
     content = []
-    column_to_source_map = {}
+    column_to_source_map: Dict[str, Any] = {}
     # Convert from column mapping's format to figure out actual column names in
     # input dataframe, and map those to the appropriate OAI input names.
     for name, formatted_entry in column_mapping.items():
-        # From "${" from start and "}" from end before splitting.
+        # Strip "${" from start and "}" from end before splitting.
         entry_pieces = formatted_entry[2:-1].split(".")
-        if len(entry_pieces) == 2 and entry_pieces[0] == "data":
+        if not entry_pieces:
+            continue
+        # Support flat data column references: ${data.<column>}
+        if entry_pieces[0] == "data" and len(entry_pieces) == 2:
             column_to_source_map[name] = entry_pieces[1]
+        # Support nested data references: ${data.<col>.<subkey>[.<subsub>...]}
+        elif entry_pieces[0] == "data" and len(entry_pieces) >= 3:
+            # Store the remaining path segments; first element is the top-level df column
+            column_to_source_map[name] = tuple(entry_pieces[1:])
+        # Support target/run output references: ${run.outputs.<column>}
         elif len(entry_pieces) == 3 and entry_pieces[0] == "run" and entry_pieces[1] == "outputs":
             column_to_source_map[name] = f"__outputs.{entry_pieces[2]}"
 
     # Using the above mapping, transform the input dataframe into a content
     # dictionary that'll work in an OAI data source.
-    for row in input_data_df.iterrows():
-        row_dict = {}
+    for _, row in input_data_df.iterrows():
+        row_dict: Dict[str, Any] = {}
         for oai_key, dataframe_key in column_to_source_map.items():
-            row_dict[oai_key] = str(row[1][dataframe_key])
+            value: Any = None
+            # Nested path: tuple("col", "subkey", ...)
+            if isinstance(dataframe_key, tuple):
+                top_col = dataframe_key[0]
+                subkeys = dataframe_key[1:]
+                cur = row.get(top_col)
+                for sk in subkeys:
+                    if isinstance(cur, dict):
+                        cur = cur.get(sk)
+                    else:
+                        cur = None
+                        break
+                value = cur
+            else:
+                # Flat column or generated output
+                try:
+                    value = row[dataframe_key]
+                except Exception:
+                    value = None
+            # Always stringify for OAI data source
+            row_dict[oai_key] = "" if value is None else str(value)
         content.append({"item": row_dict})
 
     return {
